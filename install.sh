@@ -5,8 +5,10 @@
 
 set -e  # Exit immediately if a command exits with a non-zero status
 
-# Make this script executable if it isn't already
+# Make this script and all related scripts executable if they aren't already
 chmod +x "${BASH_SOURCE[0]}"
+chmod +x "$(dirname "${BASH_SOURCE[0]}")/dcsbios_tui.py" 2>/dev/null || true
+chmod +x "$(dirname "${BASH_SOURCE[0]}")/dcsbios_daemon.py" 2>/dev/null || true
 
 
 # Configuration
