@@ -64,54 +64,52 @@ log "All files downloaded successfully!"
 
 # Function to install dependencies
 install_dependencies() {
-    log "Installing Python dependencies..."
+    log "Installing Python dependencies and creating virtual environment..."
 
-    # Check if pip is installed
-    if ! command -v pip &> /dev/null && ! command -v pip3 &> /dev/null; then
-        log "Installing pip..."
-        sudo apt update
-        sudo apt install -y python3-pip
-    fi
+    # Install required system packages
+    sudo apt update
+    sudo apt install -y python3 python3-pip python3-venv git curl
 
-    # Try installing via apt first (system package), then pip as fallback
-    if ! sudo apt install -y python3-serial 2>/dev/null; then
-        log "System package not available, using pip..."
+    # Create Python virtual environment
+    log "Creating Python virtual environment..."
+    python3 -m venv "$INSTALL_DIR/venv"
 
-        # Install Python requirements
-        if [[ -f "requirements.txt" ]]; then
-            log "Installing Python requirements..."
-            # Try with --break-system-packages first (newer systems)
-            if pip3 install --break-system-packages -r requirements.txt; then
-                log "Requirements installed successfully"
-            else
-                # If that fails, try without the flag (older systems)
-                log "Falling back to pip without --break-system-packages flag..."
-                pip3 install -r requirements.txt
-            fi
-        else
-            error "requirements.txt not found!"
-            exit 1
-        fi
+    # Activate virtual environment
+    source "$INSTALL_DIR/venv/bin/activate"
+
+    # Upgrade pip in virtual environment
+    log "Upgrading pip in virtual environment..."
+    pip3 install --upgrade pip
+
+    # Install Python requirements
+    if [[ -f "$INSTALL_DIR/requirements.txt" ]]; then
+        log "Installing Python requirements in virtual environment..."
+        pip3 install -r "$INSTALL_DIR/requirements.txt"
     else
-        log "python3-serial installed via apt"
+        log "Installing default dependencies..."
+        pip3 install pyserial
     fi
+
+    log "Virtual environment set up successfully"
 }
 
 # Function to setup directories
 setup_directories() {
     log "Creating installation directories..."
-    
+
     # Create installation directory
     mkdir -p "$INSTALL_DIR"
-    
+
     # Copy necessary files to installation directory
     cp -f "$TEMP_DIR/dcsbios_tui.py" "$INSTALL_DIR/"
     chmod +x "$INSTALL_DIR/dcsbios_tui.py"  # Make the script executable
     cp -f "$TEMP_DIR/dcsbios_daemon.py" "$INSTALL_DIR/"
     chmod +x "$INSTALL_DIR/dcsbios_daemon.py"  # Make the daemon script executable
     cp -f "$TEMP_DIR/requirements.txt" "$INSTALL_DIR/" 2>/dev/null || true
-    cp -f "$TEMP_DIR/dcsbios-tui.service" "/tmp/dcsbios-tui.service"
-    
+
+    # Update the service file to use the virtual environment
+    sed "s|ExecStart=/usr/bin/python3 /home/pi/DCS-BIOS-TUI/dcsbios_daemon.py|ExecStart=/home/pi/DCS-BIOS-TUI/venv/bin/python /home/pi/DCS-BIOS-TUI/dcsbios_daemon.py|" "$TEMP_DIR/dcsbios-tui.service" > "/tmp/dcsbios-tui.service"
+
     # Set proper ownership
     sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 }
