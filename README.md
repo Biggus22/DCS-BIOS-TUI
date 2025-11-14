@@ -34,14 +34,10 @@ For Raspberry Pi systems, use the provided installation script to set up the app
    cd DCS-BIOS-TUI
    ```
 
-2. Run the installation script (choose one of these methods):
+2. Run the installation script:
    ```bash
-   # Method 1: Make executable and run
    chmod +x install.sh
    ./install.sh
-
-   # Method 2: Run directly without changing permissions
-   bash install.sh
    ```
 
 The installation script will:
