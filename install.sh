@@ -72,7 +72,12 @@ install_dependencies() {
     # Install Python requirements
     if [[ -f "requirements.txt" ]]; then
         log "Installing Python requirements..."
-        pip3 install -r requirements.txt
+        # Try with --break-system-packages first (newer systems)
+        if ! pip3 install --break-system-packages -r requirements.txt 2>/dev/null; then
+            # If that fails, try without the flag (older systems)
+            log "Falling back to pip without --break-system-packages flag..."
+            pip3 install -r requirements.txt
+        fi
     else
         error "requirements.txt not found!"
         exit 1
