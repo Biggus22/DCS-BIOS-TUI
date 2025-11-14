@@ -24,33 +24,13 @@ A Terminal User Interface (TUI) application for managing DCS-BIOS serial devices
 
 ## Installation
 
-### Direct Installation (Recommended)
-
 For Raspberry Pi systems, use this one-line command to install directly:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Biggus22/DCS-BIOS-TUI/main/install_direct.sh | bash
+curl -sSL https://raw.githubusercontent.com/Biggus22/DCS-BIOS-TUI/main/install.sh | bash
 ```
 
-This downloads and runs the installation script directly without needing to clone the repository.
-
-### Git Clone Installation
-
-If you prefer to clone the repository first:
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/Biggus22/DCS-BIOS-TUI.git
-   cd DCS-BIOS-TUI
-   ```
-
-2. Run the installation script:
-   ```bash
-   chmod +x install.sh
-   ./install.sh
-   ```
-
-Both methods will:
+This downloads and runs the installation script directly without needing to clone the repository. The script will:
 - Install required Python dependencies
 - Set up the application as a systemd service
 - Add the user to the `dialout` group for serial port access

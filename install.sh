@@ -1,20 +1,14 @@
 #!/bin/bash
 
-# DCS-BIOS TUI Installation Script for Raspberry Pi
-# This script installs the DCS-BIOS TUI as a systemd service
+# DCS-BIOS TUI Direct Installation Script
+# This script can be run directly with curl to install DCS-BIOS TUI
 
 set -e  # Exit immediately if a command exits with a non-zero status
 
-# Make this script and all related scripts executable if they aren't already
-chmod +x "${BASH_SOURCE[0]}"
-chmod +x "$(dirname "${BASH_SOURCE[0]}")/dcsbios_tui.py" 2>/dev/null || true
-chmod +x "$(dirname "${BASH_SOURCE[0]}")/dcsbios_daemon.py" 2>/dev/null || true
-
+echo "Starting DCS-BIOS TUI direct installation..."
 
 # Configuration
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVICE_NAME="dcsbios-tui"
-SERVICE_FILE="dcsbios-tui.service"
+TEMP_DIR=$(mktemp -d)
 INSTALL_DIR="/home/pi/DCS-BIOS-TUI"
 SERVICE_USER="pi"
 
@@ -27,10 +21,6 @@ NC='\033[0m' # No Color
 # Logging function
 log() {
     echo -e "${GREEN}[INFO]${NC} $1"
-}
-
-warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
 }
 
 error() {
@@ -49,6 +39,25 @@ if [[ "$USER" != "pi" ]] && ! sudo -n true 2>/dev/null; then
     exit 1
 fi
 
+# Download the latest files from GitHub
+log "Downloading latest DCS-BIOS TUI files..."
+cd "$TEMP_DIR"
+curl -sSL https://raw.githubusercontent.com/Biggus22/DCS-BIOS-TUI/main/dcsbios_tui.py -o dcsbios_tui.py
+curl -sSL https://raw.githubusercontent.com/Biggus22/DCS-BIOS-TUI/main/dcsbios_daemon.py -o dcsbios_daemon.py
+curl -sSL https://raw.githubusercontent.com/Biggus22/DCS-BIOS-TUI/main/requirements.txt -o requirements.txt
+curl -sSL https://raw.githubusercontent.com/Biggus22/DCS-BIOS-TUI/main/dcsbios-tui.service -o dcsbios-tui.service
+
+# Verify that all files were downloaded
+REQUIRED_FILES=("dcsbios_tui.py" "dcsbios_daemon.py" "requirements.txt" "dcsbios-tui.service")
+for file in "${REQUIRED_FILES[@]}"; do
+    if [[ ! -f "$file" ]]; then
+        error "Failed to download $file"
+        exit 1
+    fi
+done
+
+log "All files downloaded successfully!"
+
 # Function to install dependencies
 install_dependencies() {
     log "Installing Python dependencies..."
@@ -65,31 +74,26 @@ install_dependencies() {
         log "Installing Python requirements..."
         pip3 install -r requirements.txt
     else
-        warn "requirements.txt not found, installing pyserial..."
-        pip3 install pyserial
+        error "requirements.txt not found!"
+        exit 1
     fi
 }
 
 # Function to setup directories
 setup_directories() {
     log "Creating installation directories..."
-
+    
     # Create installation directory
     mkdir -p "$INSTALL_DIR"
-
+    
     # Copy necessary files to installation directory
-    cp -f "$SCRIPT_DIR/dcsbios_tui.py" "$INSTALL_DIR/"
+    cp -f "$TEMP_DIR/dcsbios_tui.py" "$INSTALL_DIR/"
     chmod +x "$INSTALL_DIR/dcsbios_tui.py"  # Make the script executable
-    cp -f "$SCRIPT_DIR/dcsbios_daemon.py" "$INSTALL_DIR/"
+    cp -f "$TEMP_DIR/dcsbios_daemon.py" "$INSTALL_DIR/"
     chmod +x "$INSTALL_DIR/dcsbios_daemon.py"  # Make the daemon script executable
-    cp -f "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/" 2>/dev/null || true
-    cp -f "$SCRIPT_DIR/LICENSE" "$INSTALL_DIR/" 2>/dev/null || true
-    cp -f "$SCRIPT_DIR/README.md" "$INSTALL_DIR/" 2>/dev/null || true
-
-    # Add user to dialout group for serial port access
-    log "Adding user to dialout group for serial port access..."
-    sudo usermod -a -G dialout "$SERVICE_USER"
-
+    cp -f "$TEMP_DIR/requirements.txt" "$INSTALL_DIR/" 2>/dev/null || true
+    cp -f "$TEMP_DIR/dcsbios-tui.service" "/tmp/dcsbios-tui.service"
+    
     # Set proper ownership
     sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 }
@@ -99,10 +103,10 @@ install_service() {
     log "Installing systemd service..."
     
     # Copy service file to system directory
-    sudo cp "$SCRIPT_DIR/$SERVICE_FILE" "/etc/systemd/system/$SERVICE_FILE"
+    sudo cp "/tmp/dcsbios-tui.service" "/etc/systemd/system/dcsbios-tui.service"
     
     # Set proper permissions for the service file
-    sudo chmod 644 "/etc/systemd/system/$SERVICE_FILE"
+    sudo chmod 644 "/etc/systemd/system/dcsbios-tui.service"
     
     # Reload systemd to recognize the new service
     sudo systemctl daemon-reload
@@ -115,23 +119,29 @@ start_service() {
     log "Starting and enabling the service..."
     
     # Enable the service to start on boot
-    sudo systemctl enable "$SERVICE_FILE"
+    sudo systemctl enable "dcsbios-tui.service"
     
     # Start the service
-    sudo systemctl start "$SERVICE_FILE"
+    sudo systemctl start "dcsbios-tui.service"
     
     # Check the status
-    if sudo systemctl is-active --quiet "$SERVICE_FILE"; then
+    if sudo systemctl is-active --quiet "dcsbios-tui.service"; then
         log "Service is running successfully!"
     else
-        warn "Service may have failed to start. Check status with: sudo systemctl status $SERVICE_FILE"
+        warn "Service may have failed to start. Check status with: sudo systemctl status dcsbios-tui.service"
     fi
 }
 
 # Function to show service status
 show_status() {
     log "Service status:"
-    sudo systemctl status "$SERVICE_FILE" --no-pager -l
+    sudo systemctl status "dcsbios-tui.service" --no-pager -l
+}
+
+# Add user to dialout group
+add_to_dialout() {
+    log "Adding user to dialout group for serial port access..."
+    sudo usermod -a -G dialout "$SERVICE_USER"
 }
 
 # Show installation summary
@@ -140,11 +150,14 @@ show_summary() {
     log "DCS-BIOS TUI Installation Complete!"
     echo
     log "Service management commands:"
-    echo "  Start service:   sudo systemctl start $SERVICE_FILE"
-    echo "  Stop service:    sudo systemctl stop $SERVICE_FILE"
-    echo "  Restart service: sudo systemctl restart $SERVICE_FILE"
-    echo "  Check status:    sudo systemctl status $SERVICE_FILE"
-    echo "  View logs:       sudo journalctl -u $SERVICE_FILE -f"
+    echo "  Start service:   sudo systemctl start dcsbios-tui.service"
+    echo "  Stop service:    sudo systemctl stop dcsbios-tui.service"
+    echo "  Restart service: sudo systemctl restart dcsbios-tui.service"
+    echo "  Check status:    sudo systemctl status dcsbios-tui.service"
+    echo "  View logs:       sudo journalctl -u dcsbios-tui.service -f"
+    echo
+    log "To use the TUI interface, connect via SSH and run:"
+    echo "  python3 /home/pi/DCS-BIOS-TUI/dcsbios_tui.py"
     echo
     log "The service will automatically start on boot."
     echo
@@ -152,92 +165,24 @@ show_summary() {
 
 # Main execution
 main() {
-    log "Starting DCS-BIOS TUI installation..."
+    log "Starting DCS-BIOS TUI direct installation..."
     
     install_dependencies
+    add_to_dialout
     setup_directories
     install_service
     start_service
     show_status
     show_summary
     
-    log "Installation completed. The TUI is now running as a service!"
+    log "Installation completed. The DCS-BIOS service is now running!"
+    log "Don't forget to reboot your system to ensure all changes take effect."
 }
 
-# Parse command line arguments
-case "${1:-}" in
-    --help|-h)
-        echo "Usage: $0 [OPTIONS]"
-        echo "Install DCS-BIOS TUI as a systemd service on Raspberry Pi"
-        echo
-        echo "Options:"
-        echo "  --help, -h    Show this help message"
-        echo "  --status      Show service status"
-        echo "  --start       Start the service"
-        echo "  --stop        Stop the service"
-        echo "  --restart     Restart the service"
-        echo "  --uninstall   Uninstall the service"
-        exit 0
-        ;;
-    --status)
-        if [[ -f "/etc/systemd/system/$SERVICE_FILE" ]]; then
-            show_status
-        else
-            error "Service not installed"
-            exit 1
-        fi
-        exit 0
-        ;;
-    --start)
-        if [[ -f "/etc/systemd/system/$SERVICE_FILE" ]]; then
-            sudo systemctl start "$SERVICE_FILE"
-            log "Service started"
-        else
-            error "Service not installed"
-            exit 1
-        fi
-        exit 0
-        ;;
-    --stop)
-        if [[ -f "/etc/systemd/system/$SERVICE_FILE" ]]; then
-            sudo systemctl stop "$SERVICE_FILE"
-            log "Service stopped"
-        else
-            error "Service not installed"
-            exit 1
-        fi
-        exit 0
-        ;;
-    --restart)
-        if [[ -f "/etc/systemd/system/$SERVICE_FILE" ]]; then
-            sudo systemctl restart "$SERVICE_FILE"
-            log "Service restarted"
-        else
-            error "Service not installed"
-            exit 1
-        fi
-        exit 0
-        ;;
-    --uninstall)
-        log "Uninstalling DCS-BIOS TUI service..."
-        if [[ -f "/etc/systemd/system/$SERVICE_FILE" ]]; then
-            sudo systemctl stop "$SERVICE_FILE" 2>/dev/null || true
-            sudo systemctl disable "$SERVICE_FILE" 2>/dev/null || true
-            sudo rm -f "/etc/systemd/system/$SERVICE_FILE"
-            sudo systemctl daemon-reload
-            sudo systemctl reset-failed
-            log "Service uninstalled"
-        else
-            error "Service not found"
-        fi
-        exit 0
-        ;;
-    "")
-        main
-        ;;
-    *)
-        error "Unknown option: $1"
-        echo "Use --help for usage information."
-        exit 1
-        ;;
-esac
+# Execute main function
+main
+
+# Cleanup
+rm -rf "$TEMP_DIR"
+
+log "Installation process finished!"
