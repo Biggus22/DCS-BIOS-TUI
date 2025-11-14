@@ -107,11 +107,6 @@ Configuration is stored in `~/.dcsbios/config.json` and includes:
 - Auto-start preferences
 - Scheduled reboot time
 
-## Default Devices
-
-By default, the application configures these common DCS-BIOS devices:
-- AFCS, ICS, FUEL, ENGINE_START, VOR/ILS, O2, UTILITY_PANEL, OUTBOARD_THROTTLE_PANEL
-- Additional devices: CMS, LEFT_SUBPANEL (disabled by default)
 
 ## Troubleshooting
 
