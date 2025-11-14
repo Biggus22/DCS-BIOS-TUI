@@ -61,28 +61,35 @@ log "All files downloaded successfully!"
 # Function to install dependencies
 install_dependencies() {
     log "Installing Python dependencies..."
-    
+
     # Check if pip is installed
     if ! command -v pip &> /dev/null && ! command -v pip3 &> /dev/null; then
         log "Installing pip..."
         sudo apt update
         sudo apt install -y python3-pip
     fi
-    
-    # Install Python requirements
-    if [[ -f "requirements.txt" ]]; then
-        log "Installing Python requirements..."
-        # Try with --break-system-packages first (newer systems)
-        if pip3 install --break-system-packages -r requirements.txt; then
-            log "Requirements installed successfully"
+
+    # Try installing via apt first (system package), then pip as fallback
+    if ! sudo apt install -y python3-serial 2>/dev/null; then
+        log "System package not available, using pip..."
+
+        # Install Python requirements
+        if [[ -f "requirements.txt" ]]; then
+            log "Installing Python requirements..."
+            # Try with --break-system-packages first (newer systems)
+            if pip3 install --break-system-packages -r requirements.txt; then
+                log "Requirements installed successfully"
+            else
+                # If that fails, try without the flag (older systems)
+                log "Falling back to pip without --break-system-packages flag..."
+                pip3 install -r requirements.txt
+            fi
         else
-            # If that fails, try without the flag (older systems)
-            log "Falling back to pip without --break-system-packages flag..."
-            pip3 install -r requirements.txt
+            error "requirements.txt not found!"
+            exit 1
         fi
     else
-        error "requirements.txt not found!"
-        exit 1
+        log "python3-serial installed via apt"
     fi
 }
 
