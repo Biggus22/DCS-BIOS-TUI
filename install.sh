@@ -73,7 +73,9 @@ install_dependencies() {
     if [[ -f "requirements.txt" ]]; then
         log "Installing Python requirements..."
         # Try with --break-system-packages first (newer systems)
-        if ! pip3 install --break-system-packages -r requirements.txt 2>/dev/null; then
+        if pip3 install --break-system-packages -r requirements.txt; then
+            log "Requirements installed successfully"
+        else
             # If that fails, try without the flag (older systems)
             log "Falling back to pip without --break-system-packages flag..."
             pip3 install -r requirements.txt
