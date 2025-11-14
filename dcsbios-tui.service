@@ -1,0 +1,21 @@
+[Unit]
+Description=DCS-BIOS Controller Manager TUI
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/DCS-BIOS-TUI
+ExecStart=/usr/bin/python3 /home/pi/DCS-BIOS-TUI/dcsbios_tui.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables if needed
+# Environment="PYTHONPATH=/home/pi/DCS-BIOS-TUI"
+
+[Install]
+WantedBy=multi-user.target
