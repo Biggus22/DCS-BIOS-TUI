@@ -23,6 +23,10 @@ log() {
     echo -e "${GREEN}[INFO]${NC} $1"
 }
 
+warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
 error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
