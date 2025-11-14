@@ -30,7 +30,7 @@ For Raspberry Pi systems, use the provided installation script to set up the app
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/DCS-BIOS-TUI.git
+   git clone https://github.com/Biggus22/DCS-BIOS-TUI.git
    cd DCS-BIOS-TUI
    ```
 
