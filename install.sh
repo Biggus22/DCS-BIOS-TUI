@@ -95,10 +95,24 @@ install_dependencies() {
 
 # Function to setup directories
 setup_directories() {
-    log "Creating installation directories..."
+    log "Setting up installation directories..."
 
-    # Create installation directory
-    mkdir -p "$INSTALL_DIR"
+    # Create installation directory if it doesn't exist, otherwise backup config
+    if [[ -d "$INSTALL_DIR" ]]; then
+        log "Existing installation found, backing up config..."
+        # Backup configuration if it exists
+        if [[ -f "$HOME/.dcsbios/config.json" ]]; then
+            cp "$HOME/.dcsbios/config.json" "$HOME/.dcsbios/config.json.backup.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+        fi
+        # Stop service before updating
+        if sudo systemctl is-active --quiet "dcsbios-tui.service"; then
+            log "Stopping existing service..."
+            sudo systemctl stop "dcsbios-tui.service"
+        fi
+    else
+        log "Creating installation directory..."
+        mkdir -p "$INSTALL_DIR"
+    fi
 
     # Copy necessary files to installation directory
     cp -f "$TEMP_DIR/dcsbios_tui.py" "$INSTALL_DIR/"
@@ -182,7 +196,7 @@ show_summary() {
 # Main execution
 main() {
     log "Starting DCS-BIOS TUI direct installation..."
-    
+
     install_dependencies
     add_to_dialout
     setup_directories
@@ -190,8 +204,8 @@ main() {
     start_service
     show_status
     show_summary
-    
-    log "Installation completed. The DCS-BIOS service is now running!"
+
+    log "Installation/update completed. The DCS-BIOS service is now running!"
     log "Don't forget to reboot your system to ensure all changes take effect."
 }
 
