@@ -5,6 +5,10 @@
 
 set -e  # Exit immediately if a command exits with a non-zero status
 
+# Make this script executable if it isn't already
+chmod +x "${BASH_SOURCE[0]}"
+
+
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="dcsbios-tui"
@@ -74,6 +78,8 @@ setup_directories() {
     # Copy necessary files to installation directory
     cp -f "$SCRIPT_DIR/dcsbios_tui.py" "$INSTALL_DIR/"
     chmod +x "$INSTALL_DIR/dcsbios_tui.py"  # Make the script executable
+    cp -f "$SCRIPT_DIR/dcsbios_daemon.py" "$INSTALL_DIR/"
+    chmod +x "$INSTALL_DIR/dcsbios_daemon.py"  # Make the daemon script executable
     cp -f "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/" 2>/dev/null || true
     cp -f "$SCRIPT_DIR/LICENSE" "$INSTALL_DIR/" 2>/dev/null || true
     cp -f "$SCRIPT_DIR/README.md" "$INSTALL_DIR/" 2>/dev/null || true

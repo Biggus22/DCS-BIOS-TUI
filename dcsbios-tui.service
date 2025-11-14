@@ -1,5 +1,5 @@
 [Unit]
-Description=DCS-BIOS Controller Manager TUI
+Description=DCS-BIOS Controller Service
 After=network.target
 Wants=network.target
 
@@ -8,7 +8,7 @@ Type=simple
 User=pi
 Group=pi
 WorkingDirectory=/home/pi/DCS-BIOS-TUI
-ExecStart=/usr/bin/python3 /home/pi/DCS-BIOS-TUI/dcsbios_tui.py
+ExecStart=/usr/bin/python3 /home/pi/DCS-BIOS-TUI/dcsbios_daemon.py
 Restart=always
 RestartSec=5
 StandardOutput=journal

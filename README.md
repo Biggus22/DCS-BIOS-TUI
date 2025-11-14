@@ -36,7 +36,6 @@ For Raspberry Pi systems, use the provided installation script to set up the app
 
 2. Run the installation script:
    ```bash
-   chmod +x install.sh
    ./install.sh
    ```
 
@@ -74,10 +73,15 @@ The installation script will:
 
 ### As a Service (After Installation)
 
-The application will run automatically as a service. To interact with it, SSH into your Raspberry Pi and run:
+The application will run automatically in the background as a service, managing your DCS-BIOS serial connections.
+The TUI interface is run interactively when you need to configure or monitor your devices.
+
+To interact with the TUI interface, SSH into your Raspberry Pi and run:
 ```bash
 python3 /home/pi/DCS-BIOS-TUI/dcsbios_tui.py
 ```
+
+The service handles the actual data forwarding between DCS and your serial devices in the background.
 
 ### Service Management
 
