@@ -59,16 +59,6 @@ The installation script will:
    pip install pyserial
    ```
 
-3. Add user to dialout group for serial port access:
-   ```bash
-   sudo usermod -a -G dialout $USER
-   ```
-
-4. Make sure the script is executable:
-   ```bash
-   chmod +x dcsbios_tui.py
-   ```
-
 ## Usage
 
 ### As a Service (After Installation)
@@ -114,7 +104,7 @@ Configuration is stored in `~/.dcsbios/config.json` and includes:
 
 ## Troubleshooting
 
-- Make sure you have permission to access serial ports (handled by installation script)
+- If having serial port access issues, ensure you've run the installation script (which adds the user to the dialout group)
 - Verify DCS-PC IP address is correctly configured
 - Check that serial devices are properly connected and detected by the system
 - Check service status with `sudo systemctl status dcsbios-tui.service`
