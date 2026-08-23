@@ -4,12 +4,14 @@ DCS-BIOS Controller Daemon
 Background service for managing DCS-BIOS serial devices on Raspberry Pi
 """
 
+import datetime
 import json
 import os
 import threading
 import time
 import socket
 import struct
+import subprocess
 import serial
 
 # Determine config file location in user's home directory
@@ -19,6 +21,41 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 # Ensure config directory exists
 os.makedirs(CONFIG_DIR, exist_ok=True)
+
+
+def get_throttled_status():
+    """Get Raspberry Pi throttled/undervoltage status via vcgencmd"""
+    try:
+        result = subprocess.run(
+            ['vcgencmd', 'get_throttled'],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode != 0:
+            return None
+
+        output = result.stdout.strip()
+        if 'throttled=' not in output:
+            return None
+
+        hex_value = output.split('=', 1)[1].strip()
+        parsed_hex = hex_value[2:] if hex_value.lower().startswith('0x') else hex_value
+        value = int(parsed_hex, 16)
+
+        return {
+            'raw': hex_value,
+            'undervoltage_now': bool(value & 0x1),
+            'freq_capped_now': bool(value & 0x2),
+            'throttled_now': bool(value & 0x4),
+            'temp_limit_now': bool(value & 0x8),
+            'undervoltage_occurred': bool(value & 0x10000),
+            'freq_capped_occurred': bool(value & 0x20000),
+            'throttled_occurred': bool(value & 0x40000),
+            'temp_limit_occurred': bool(value & 0x80000)
+        }
+    except Exception:
+        return None
 
 class DeviceConfig:
     def __init__(self, name: str, port: str, baudrate: int = 250000, enabled: bool = True):
@@ -66,6 +103,15 @@ class DCSBIOSManager:
         # Auto-start and scheduled reboot settings
         self.auto_start = False
         self.scheduled_reboot_time = None  # Format: "HH:MM"
+        self.max_reconnect_attempts = 5
+        self.reconnect_delay_seconds = 3
+        self.serial_open_spacing_seconds = 0.5
+        self.low_voltage_event_logging = False
+        self.last_low_voltage_detected_at = None
+        self.last_power_status = None
+        self.serial_open_lock = threading.Lock()
+        self.next_serial_open_time = 0.0
+        self.power_monitor_interval_seconds = 5
 
         self.load_config()
 
@@ -74,6 +120,37 @@ class DCSBIOSManager:
         self.status_messages.append(f"[{timestamp}] {msg}")
         if len(self.status_messages) > self.max_messages:
             self.status_messages.pop(0)
+
+    def current_timestamp_iso(self) -> str:
+        return datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+
+    def current_timestamp_label(self) -> str:
+        return datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    def update_power_status(self):
+        power = get_throttled_status()
+        if power is None:
+            self.last_power_status = None
+            return None
+
+        previous_power = self.last_power_status or {}
+        new_undervoltage_event = (
+            (power.get('undervoltage_now') and not previous_power.get('undervoltage_now', False))
+            or (power.get('undervoltage_occurred') and not previous_power.get('undervoltage_occurred', False))
+        )
+
+        if new_undervoltage_event:
+            self.last_low_voltage_detected_at = self.current_timestamp_iso()
+            if self.low_voltage_event_logging:
+                self.add_message(
+                    f"Low voltage detected at {self.current_timestamp_label()} ({power.get('raw', 'unknown')})"
+                )
+            self.save_config(emit_message=False)
+
+        power['last_low_voltage_detected_at'] = self.last_low_voltage_detected_at
+        power['low_voltage_event_logging'] = self.low_voltage_event_logging
+        self.last_power_status = dict(power)
+        return power
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -86,6 +163,11 @@ class DCSBIOSManager:
                     self.multicast_group = data.get("multicast_group", self.multicast_group)
                     self.auto_start = data.get("auto_start", False)
                     self.scheduled_reboot_time = data.get("scheduled_reboot_time", None)
+                    self.max_reconnect_attempts = data.get("max_reconnect_attempts", self.max_reconnect_attempts)
+                    self.reconnect_delay_seconds = data.get("reconnect_delay_seconds", self.reconnect_delay_seconds)
+                    self.serial_open_spacing_seconds = data.get("serial_open_spacing_seconds", self.serial_open_spacing_seconds)
+                    self.low_voltage_event_logging = data.get("low_voltage_event_logging", self.low_voltage_event_logging)
+                    self.last_low_voltage_detected_at = data.get("last_low_voltage_detected_at")
                 self.add_message(f"Loaded {len(self.devices)} devices from config")
             except Exception as e:
                 self.add_message(f"Error loading config: {e}")
@@ -111,7 +193,7 @@ class DCSBIOSManager:
         for name, port, enabled in default_devices:
             self.devices.append(DeviceConfig(name, port, 250000, enabled))
 
-    def save_config(self):
+    def save_config(self, emit_message: bool = True):
         try:
             data = {
                 "devices": [d.to_dict() for d in self.devices],
@@ -119,19 +201,52 @@ class DCSBIOSManager:
                 "udp_port": self.udp_port,
                 "multicast_group": self.multicast_group,
                 "auto_start": self.auto_start,
-                "scheduled_reboot_time": self.scheduled_reboot_time
+                "scheduled_reboot_time": self.scheduled_reboot_time,
+                "max_reconnect_attempts": self.max_reconnect_attempts,
+                "reconnect_delay_seconds": self.reconnect_delay_seconds,
+                "serial_open_spacing_seconds": self.serial_open_spacing_seconds,
+                "low_voltage_event_logging": self.low_voltage_event_logging,
+                "last_low_voltage_detected_at": self.last_low_voltage_detected_at
             }
             with open(CONFIG_FILE, 'w') as f:
                 json.dump(data, f, indent=2)
-            self.add_message(f"Config saved to {CONFIG_FILE}")
+            if emit_message:
+                self.add_message(f"Config saved to {CONFIG_FILE}")
         except Exception as e:
             self.add_message(f"Error saving config: {e}")
+
+    def wait_for_serial_open_slot(self):
+        spacing = max(0.0, float(self.serial_open_spacing_seconds))
+        if spacing == 0:
+            return self.running
+
+        while self.running:
+            with self.serial_open_lock:
+                now = time.time()
+                wait_time = self.next_serial_open_time - now
+                if wait_time <= 0:
+                    self.next_serial_open_time = now + spacing
+                    return True
+            time.sleep(min(wait_time, 0.05) if wait_time > 0 else 0.01)
+
+        return False
+
+    def open_serial_port(self, device: DeviceConfig):
+        if not self.wait_for_serial_open_slot():
+            raise RuntimeError("Manager stopped before serial port open")
+        return serial.Serial(device.port, device.baudrate, timeout=0.1)
+
+    def power_status_monitor(self):
+        while self.running:
+            self.update_power_status()
+            time.sleep(self.power_monitor_interval_seconds)
 
     def setup_udp(self):
         try:
             self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
             self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.udp_sock.bind((self.udp_ip, self.udp_port))
+            self.udp_sock.settimeout(0.5)
 
             mreq = struct.pack("=4sl", socket.inet_aton(self.multicast_group), socket.INADDR_ANY)
             self.udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
@@ -148,11 +263,13 @@ class DCSBIOSManager:
 
         ser = None
         device.status = "Connecting"
+        consecutive_failures = 0
 
         while self.running:
             try:
                 if ser is None or not ser.is_open:
-                    ser = serial.Serial(device.port, device.baudrate, timeout=0.1)
+                    ser = self.open_serial_port(device)
+                    consecutive_failures = 0
                     device.status = "Connected"
                     self.add_message(f"{device.name} connected on {device.port}")
 
@@ -162,47 +279,103 @@ class DCSBIOSManager:
                         clean_data = data.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
                         self.udp_sock.sendto(clean_data, (self.dcs_pc_ip, self.udp_dest_port))
                         device.last_activity = time.time()
+                        consecutive_failures = 0
                 else:
                     time.sleep(0.005)
 
             except (serial.SerialException, PermissionError) as e:
                 device.status = "Error"
+                consecutive_failures += 1
                 if ser and ser.is_open:
                     try:
                         ser.close()
                     except:
                         pass
                 ser = None
-                time.sleep(3)
+                if consecutive_failures >= self.max_reconnect_attempts:
+                    self.add_message(
+                        f"{device.name} connection failed after {self.max_reconnect_attempts} attempts ({e}). Giving up."
+                    )
+                    break
+                self.add_message(
+                    f"{device.name} error ({e}). Reconnect attempt {consecutive_failures}/{self.max_reconnect_attempts} in {self.reconnect_delay_seconds}s"
+                )
+                time.sleep(self.reconnect_delay_seconds)
             except Exception as e:
                 device.status = "Error"
-                time.sleep(5)
+                consecutive_failures += 1
+                if ser and ser.is_open:
+                    try:
+                        ser.close()
+                    except:
+                        pass
+                ser = None
+                if consecutive_failures >= self.max_reconnect_attempts:
+                    self.add_message(
+                        f"{device.name} unexpected serial error after {self.max_reconnect_attempts} attempts ({e}). Giving up."
+                    )
+                    break
+                self.add_message(
+                    f"{device.name} unexpected serial error ({e}). Reconnect attempt {consecutive_failures}/{self.max_reconnect_attempts} in {self.reconnect_delay_seconds}s"
+                )
+                time.sleep(self.reconnect_delay_seconds)
 
         if ser and ser.is_open:
             try:
                 ser.close()
             except:
                 pass
-        device.status = "Stopped"
+        if not self.running:
+            device.status = "Stopped"
 
     def udp_to_serial(self):
         self.active_serial_ports = []
 
-        # Open serial ports for all enabled devices
         for device in self.devices:
             if device.enabled:
-                try:
-                    ser = serial.Serial(device.port, device.baudrate, timeout=0.1)
-                    self.active_serial_ports.append({
-                        "name": device.name,
-                        "port": ser,
-                        "device": device
-                    })
-                    self.add_message(f"Opened {device.name} for UDP forwarding")
-                except Exception as e:
-                    self.add_message(f"Could not open {device.name}: {e}")
+                self.active_serial_ports.append({
+                    "name": device.name,
+                    "port": None,
+                    "device": device,
+                    "failures": 0,
+                    "next_retry": 0.0
+                })
 
         while self.running:
+            now = time.time()
+
+            for entry in self.active_serial_ports:
+                ser = entry["port"]
+                device = entry["device"]
+
+                if ser and ser.is_open:
+                    continue
+
+                if entry["failures"] >= self.max_reconnect_attempts:
+                    continue
+
+                if now < entry["next_retry"]:
+                    continue
+
+                try:
+                    entry["port"] = self.open_serial_port(device)
+                    entry["failures"] = 0
+                    entry["next_retry"] = 0.0
+                    device.status = "Connected"
+                    self.add_message(f"Opened {device.name} for UDP forwarding")
+                except Exception as e:
+                    entry["failures"] += 1
+                    device.status = "Error"
+                    entry["next_retry"] = now + self.reconnect_delay_seconds
+                    if entry["failures"] >= self.max_reconnect_attempts:
+                        self.add_message(
+                            f"Could not open {device.name} after {self.max_reconnect_attempts} attempts ({e}). Giving up."
+                        )
+                    else:
+                        self.add_message(
+                            f"Could not open {device.name} ({e}). Reconnect attempt {entry['failures']}/{self.max_reconnect_attempts} in {self.reconnect_delay_seconds}s"
+                        )
+
             try:
                 data, addr = self.udp_sock.recvfrom(1024)
 
@@ -219,9 +392,27 @@ class DCSBIOSManager:
                         try:
                             ser.write(data)
                             device.last_activity = time.time()
-                        except Exception:
-                            pass
+                            entry["failures"] = 0
+                        except Exception as e:
+                            try:
+                                ser.close()
+                            except:
+                                pass
+                            entry["port"] = None
+                            entry["failures"] += 1
+                            device.status = "Error"
+                            entry["next_retry"] = time.time() + self.reconnect_delay_seconds
+                            if entry["failures"] >= self.max_reconnect_attempts:
+                                self.add_message(
+                                    f"UDP forwarding failed for {device.name} after {self.max_reconnect_attempts} attempts ({e}). Giving up."
+                                )
+                            else:
+                                self.add_message(
+                                    f"UDP forwarding error on {device.name} ({e}). Reconnect attempt {entry['failures']}/{self.max_reconnect_attempts} in {self.reconnect_delay_seconds}s"
+                                )
 
+            except socket.timeout:
+                continue
             except Exception as e:
                 time.sleep(1)
 
@@ -239,12 +430,23 @@ class DCSBIOSManager:
             return
 
         self.running = True
+        with self.serial_open_lock:
+            self.next_serial_open_time = time.time()
         self.setup_udp()
+
+        if self.serial_open_spacing_seconds > 0:
+            self.add_message(
+                f"Pacing serial open attempts by {self.serial_open_spacing_seconds:g}s"
+            )
 
         # Start UDP to serial thread
         udp_thread = threading.Thread(target=self.udp_to_serial, daemon=True)
         udp_thread.start()
         self.threads.append(udp_thread)
+
+        power_thread = threading.Thread(target=self.power_status_monitor, daemon=True)
+        power_thread.start()
+        self.threads.append(power_thread)
 
         # Start serial to UDP threads for each enabled device
         for device in self.devices:
