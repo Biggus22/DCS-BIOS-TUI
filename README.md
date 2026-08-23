@@ -12,7 +12,6 @@ A Terminal User Interface (TUI) application for managing DCS-BIOS serial devices
 - UDP multicast communication for DCS-BIOS protocol
 - Real-time status monitoring of devices
 - Device configuration persistence
-- USB power control (Raspberry Pi topology only — hardcoded `uhubctl -l 1-1 -p 2`, requires a Pi's built-in hub)
 - Scheduled reboot functionality
 - Auto-start configuration
 

@@ -678,7 +678,6 @@ class TUI:
         self.menu_items.append(("separator", None))
         self.menu_items.append(("add", None))
         self.menu_items.append(("start_stop", None))
-        self.menu_items.append(("usb_toggle", None))
         self.menu_items.append(("multicast_settings", None))
         self.menu_items.append(("reboot", None))
         self.menu_items.append(("schedule_reboot", None))
@@ -780,13 +779,7 @@ class TUI:
                 
                 elif item_type == "start_stop":
                     action = "Stop" if self.manager.running else "Start"
-                    line = f"{'►' if is_selected else ' '} [{action}] DCS-BIOS Manager"
-                    attr = curses.color_pair(1) if is_selected else curses.color_pair(5)
-                    self.stdscr.addstr(row, 2, line[:width-4], attr)
-                    row += 1
-                
-                elif item_type == "usb_toggle":
-                    line = f"{'►' if is_selected else ' '} [USB] Turn USB OFF"
+                    line = f"{'' if is_selected else ' '} [{action}] DCS-BIOS Manager"
                     attr = curses.color_pair(1) if is_selected else curses.color_pair(5)
                     self.stdscr.addstr(row, 2, line[:width-4], attr)
                     row += 1
@@ -894,9 +887,6 @@ class TUI:
                     else:
                         self.manager.start()
                     self.needs_redraw = True
-                elif item_type == "usb_toggle":
-                    self.usb_toggle_submenu()
-                    self.needs_redraw = True
                 elif item_type == "multicast_settings":
                     self.multicast_settings_dialog()
                     self.needs_redraw = True
@@ -937,92 +927,6 @@ class TUI:
         if self.manager.running:
             self.manager.stop()
     
-    def usb_toggle_submenu(self):
-        """Submenu for USB power toggle with warning"""
-        height, width = self.stdscr.getmaxyx()
-        dialog_height, dialog_width = 12, 50
-        dialog_y = max(0, (height - dialog_height) // 2)
-        dialog_x = max(0, (width - dialog_width) // 2)
-        
-        if width < 50:
-            dialog_width = width - 4
-        
-        dialog = curses.newwin(dialog_height, dialog_width, dialog_y, dialog_x)
-        dialog.keypad(True)
-        dialog.nodelay(0)
-        
-        options = ["Turn USB OFF (requires reboot to restore)", "Cancel"]
-        selected = 0
-        
-        while True:
-            try:
-                dialog.clear()
-                dialog.box()
-                dialog.addstr(0, 2, " USB Power Control ", curses.color_pair(4) | curses.A_BOLD)
-                
-                dialog.addstr(2, 2, "WARNING:", curses.color_pair(3) | curses.A_BOLD)
-                dialog.addstr(3, 2, "Turning USB OFF will disable all", curses.color_pair(3))
-                dialog.addstr(4, 2, "USB devices until Pi is rebooted!", curses.color_pair(3))
-                
-                for i, option in enumerate(options):
-                    row = 6 + i
-                    if i == selected:
-                        dialog.addstr(row, 2, f"► {option}", curses.color_pair(1))
-                    else:
-                        dialog.addstr(row, 2, f"  {option}")
-                
-                dialog.addstr(dialog_height - 2, 2, "↑/↓:Nav ENTER:Select ESC:Cancel")
-                dialog.refresh()
-                
-                key = dialog.getch()
-                
-                if key == curses.KEY_UP:
-                    selected = (selected - 1) % len(options)
-                elif key == curses.KEY_DOWN:
-                    selected = (selected + 1) % len(options)
-                elif key in [curses.KEY_ENTER, 10, 13]:
-                    if selected == 0:  # Turn OFF
-                        if self.manager.running:
-                            self.manager.stop()
-                            time.sleep(1)
-                        self.toggle_usb_power_off()
-                        break
-                    else:  # Cancel
-                        break
-                elif key == 27:  # ESC
-                    break
-            except curses.error:
-                pass
-        
-        self.needs_redraw = True
-    
-    def toggle_usb_power_off(self):
-        """Turn USB power off - requires reboot to restore"""
-        try:
-            self.manager.add_message("Turning USB OFF...")
-            self.needs_redraw = True
-            self.draw()
-            
-            result = subprocess.run(
-                ["sudo", "uhubctl", "-l", "1-1", "-p", "2", "-a", "0"],
-                capture_output=True, text=True, timeout=5
-            )
-            
-            self.manager.add_message("USB Port 2: OFF")
-            self.manager.add_message("REBOOT REQUIRED to restore USB power")
-            
-            if result.returncode != 0 and result.stderr:
-                self.manager.add_message(f"Error: {result.stderr.strip()[:50]}")
-                
-        except FileNotFoundError:
-            self.manager.add_message("uhubctl not found. Install: sudo apt install uhubctl")
-        except subprocess.TimeoutExpired:
-            self.manager.add_message("USB toggle timeout")
-        except Exception as e:
-            self.manager.add_message(f"USB toggle error: {e}")
-        
-        self.needs_redraw = True
-    
     def start_reboot_checker(self):
         """Start background thread to check for scheduled reboot"""
         def check_reboot():
@@ -1033,15 +937,6 @@ class TUI:
                         self.manager.add_message(f"Scheduled reboot at {current_time}")
                         if self.manager.running:
                             self.manager.stop()
-                        # Turn off USB before reboot
-                        self.manager.add_message("Turning off USB ports...")
-                        try:
-                            subprocess.run(
-                                ["sudo", "uhubctl", "-l", "1-1", "-p", "2", "-a", "0"],
-                                capture_output=True, timeout=5
-                            )
-                        except:
-                            pass
                         time.sleep(2)
                         subprocess.run(["sudo", "reboot"])
                         break
@@ -1948,15 +1843,6 @@ if __name__ == "__main__":
                         print(f"Scheduled reboot at {current_time}")
                         if manager.running:
                             manager.stop()
-                        # Turn off USB before reboot
-                        print("Turning off USB ports...")
-                        try:
-                            subprocess.run(
-                                ["sudo", "uhubctl", "-l", "1-1", "-p", "2", "-a", "0"],
-                                capture_output=True, timeout=5
-                            )
-                        except:
-                            pass
                         time.sleep(2)
                         subprocess.run(["sudo", "reboot"])
                         break
