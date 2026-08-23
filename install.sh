@@ -43,19 +43,29 @@ if [[ "$USER" != "pi" ]] && ! sudo -n true 2>/dev/null; then
     exit 1
 fi
 
-# Download the latest files from GitHub
+# Download the latest files from Gitea (self-hosted)
+# The repo is private: pass a token via the GITEA_TOKEN environment variable.
 log "Downloading latest DCS-BIOS TUI files..."
 cd "$TEMP_DIR"
-curl -sSL https://raw.githubusercontent.com/Biggus22/DCS-BIOS-TUI/main/dcsbios_tui.py -o dcsbios_tui.py
-curl -sSL https://raw.githubusercontent.com/Biggus22/DCS-BIOS-TUI/main/dcsbios_daemon.py -o dcsbios_daemon.py
-curl -sSL https://raw.githubusercontent.com/Biggus22/DCS-BIOS-TUI/main/requirements.txt -o requirements.txt
-curl -sSL https://raw.githubusercontent.com/Biggus22/DCS-BIOS-TUI/main/dcsbios-tui.service -o dcsbios-tui.service
+GITEA_RAW_BASE="https://gitea.pitato.duckdns.org/pi/DCS-BIOS-TUI/raw/branch/main"
+CURL_AUTH=()
+if [[ -n "${GITEA_TOKEN:-}" ]]; then
+    CURL_AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
+fi
+for file in dcsbios_tui.py dcsbios_daemon.py requirements.txt dcsbios-tui.service; do
+    curl -fsSL "${CURL_AUTH[@]}" "$GITEA_RAW_BASE/$file" -o "$file" || {
+        error "Failed to download $file from Gitea."
+        error "If the repository is private, export GITEA_TOKEN=<your-token> first."
+        exit 1
+    }
+done
 
 # Verify that all files were downloaded
 REQUIRED_FILES=("dcsbios_tui.py" "dcsbios_daemon.py" "requirements.txt" "dcsbios-tui.service")
 for file in "${REQUIRED_FILES[@]}"; do
-    if [[ ! -f "$file" ]]; then
-        error "Failed to download $file"
+    if [[ ! -s "$file" ]]; then
+        error "Missing or empty: $file"
+        error "If the repository is private, export GITEA_TOKEN=<your-token> and retry."
         exit 1
     fi
 done

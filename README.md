@@ -24,10 +24,10 @@ A Terminal User Interface (TUI) application for managing DCS-BIOS serial devices
 
 ## Installation
 
-For Raspberry Pi systems, use this one-line command to install directly:
+For Raspberry Pi systems, use this one-line command to install directly (requires `GITEA_TOKEN` exported — the repository is private):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Biggus22/DCS-BIOS-TUI/main/install.sh | bash
+GITEA_TOKEN=<your-token> bash -c 'curl -sSL -H "Authorization: token $GITEA_TOKEN" https://gitea.pitato.duckdns.org/pi/DCS-BIOS-TUI/raw/branch/main/install.sh | bash'
 ```
 
 This downloads and runs the installation script directly without needing to clone the repository. The script will:
