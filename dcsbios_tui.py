@@ -1652,7 +1652,12 @@ class TUI:
     
     def install_boot_service(self):
         """Install systemd service for boot"""
-        script_path = os.path.abspath(__file__)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        daemon_path = os.path.join(script_dir, "dcsbios_daemon.py")
+        # Use the interpreter actually running this TUI so venv packages
+        # (pyserial) are available to the service. /usr/bin/python3 would
+        # crash with ModuleNotFoundError on venv-only installs.
+        python_bin = sys.executable or "/usr/bin/python3"
         service_content = f"""[Unit]
 Description=DCS-BIOS Controller Manager
 After=network.target
@@ -1660,7 +1665,8 @@ After=network.target
 [Service]
 Type=simple
 User={os.getenv('USER')}
-ExecStart=/usr/bin/python3 {script_path} --headless
+WorkingDirectory={script_dir}
+ExecStart={python_bin} {daemon_path}
 Restart=on-failure
 RestartSec=5
 
