@@ -14,6 +14,7 @@ import socket
 import struct
 import subprocess
 import serial
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Determine config file location in user's home directory
 HOME_DIR = os.path.expanduser("~")
@@ -114,13 +115,20 @@ class DCSBIOSManager:
         self.next_serial_open_time = 0.0
         self.power_monitor_interval_seconds = 5
 
+        # Headless status API (0 disables). Serves GET /api/status.
+        self.status_api_port = 8080
+        self.started_at = time.time()
+
         self.load_config()
 
     def add_message(self, msg: str):
         timestamp = time.strftime("%H:%M:%S")
-        self.status_messages.append(f"[{timestamp}] {msg}")
+        formatted = f"[{timestamp}] {msg}"
+        self.status_messages.append(formatted)
         if len(self.status_messages) > self.max_messages:
             self.status_messages.pop(0)
+        # Mirror to stdout so journald captures daemon activity headlessly.
+        print(formatted, flush=True)
 
     def current_timestamp_iso(self) -> str:
         return datetime.datetime.now().astimezone().isoformat(timespec='seconds')
@@ -169,6 +177,7 @@ class DCSBIOSManager:
                     self.serial_open_spacing_seconds = data.get("serial_open_spacing_seconds", self.serial_open_spacing_seconds)
                     self.low_voltage_event_logging = data.get("low_voltage_event_logging", self.low_voltage_event_logging)
                     self.last_low_voltage_detected_at = data.get("last_low_voltage_detected_at")
+                    self.status_api_port = data.get("status_api_port", self.status_api_port)
                 self.add_message(f"Loaded {len(self.devices)} devices from config")
             except Exception as e:
                 self.add_message(f"Error loading config: {e}")
@@ -207,7 +216,8 @@ class DCSBIOSManager:
                 "reconnect_delay_seconds": self.reconnect_delay_seconds,
                 "serial_open_spacing_seconds": self.serial_open_spacing_seconds,
                 "low_voltage_event_logging": self.low_voltage_event_logging,
-                "last_low_voltage_detected_at": self.last_low_voltage_detected_at
+                "last_low_voltage_detected_at": self.last_low_voltage_detected_at,
+                "status_api_port": self.status_api_port
             }
             with open(CONFIG_FILE, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -215,6 +225,53 @@ class DCSBIOSManager:
                 self.add_message(f"Config saved to {CONFIG_FILE}")
         except Exception as e:
             self.add_message(f"Error saving config: {e}")
+
+    def _status_snapshot(self):
+        return {
+            "running": self.running,
+            "uptime_seconds": round(time.time() - self.started_at, 1),
+            "dcs_pc_ip": self.dcs_pc_ip,
+            "udp_port": self.udp_port,
+            "multicast_group": self.multicast_group,
+            "auto_start": self.auto_start,
+            "devices": [
+                {
+                    "name": d.name,
+                    "port": d.port,
+                    "baudrate": d.baudrate,
+                    "enabled": d.enabled,
+                    "status": d.status,
+                    "last_activity": d.last_activity,
+                }
+                for d in self.devices
+            ],
+            "messages": self.status_messages[-20:],
+        }
+
+    def status_api_server(self):
+        """Serve GET /api/status so a headless host is observable without the TUI."""
+        manager = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path.split("?")[0] != "/api/status":
+                    self.send_error(404)
+                    return
+                body = json.dumps(manager._status_snapshot()).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, fmt, *args):
+                pass  # keep request noise out of journald
+
+        try:
+            self._status_httpd = ThreadingHTTPServer(("0.0.0.0", self.status_api_port), Handler)
+            self._status_httpd.serve_forever()
+        except Exception as e:
+            self.add_message(f"Status API unavailable on port {self.status_api_port}: {e}")
 
     def wait_for_serial_open_slot(self):
         spacing = max(0.0, float(self.serial_open_spacing_seconds))
@@ -460,6 +517,13 @@ class DCSBIOSManager:
         power_thread.start()
         self.threads.append(power_thread)
 
+        # Headless observability: status API for curl/browser
+        if self.status_api_port:
+            api_thread = threading.Thread(target=self.status_api_server, daemon=True)
+            api_thread.start()
+            self.threads.append(api_thread)
+            self.add_message(f"Status API on http://0.0.0.0:{self.status_api_port}/api/status")
+
         # Start serial to UDP threads for each enabled device
         for device in self.devices:
             if device.enabled:
@@ -477,6 +541,14 @@ class DCSBIOSManager:
         self.running = False
         self.add_message("Stopping DCS-BIOS manager daemon...")
         time.sleep(1)
+        httpd = getattr(self, "_status_httpd", None)
+        if httpd:
+            try:
+                httpd.shutdown()
+                httpd.server_close()
+            except Exception:
+                pass
+            self._status_httpd = None
         if self.udp_sock:
             try:
                 self.udp_sock.close()
