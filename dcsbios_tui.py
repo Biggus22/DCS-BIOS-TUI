@@ -73,6 +73,127 @@ def sanitize_input(input_str):
     # Strip leading/trailing whitespace
     return sanitized.strip()
 
+
+def _get_port_info(port):
+    """Get information about a serial port using udevadm"""
+    try:
+        result = subprocess.run(
+            ['udevadm', 'info', '-q', 'property', '-n', port],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+
+        if result.returncode == 0:
+            props = {}
+            for line in result.stdout.split('\n'):
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    props[key] = value
+
+            vendor = props.get('ID_VENDOR', '')
+            model = props.get('ID_MODEL', '')
+            serial_num = props.get('ID_SERIAL_SHORT', '')
+
+            if vendor and model:
+                info = f"{vendor} {model}"
+                if serial_num:
+                    info += f" (S/N: {serial_num})"
+                return info
+            elif 'ID_USB_INTERFACE_NUM' in props:
+                return "USB Serial Device"
+            else:
+                return "Serial Device"
+    except Exception:
+        pass
+
+    # Fallback: try to identify by port name
+    if 'ACM' in port:
+        return "USB CDC ACM Device (Arduino compatible)"
+    elif 'USB' in port:
+        return "USB to Serial Adapter"
+    elif 'AMA' in port:
+        return "Hardware Serial Port"
+    return "Serial Port"
+
+
+def _compact_by_path_label(name):
+    """Turn a by-path symlink name into a short topology tag.
+
+    'pci-0000:00:14.0-usb-0:3.1.1:1.0' -> 'USB 3.1.1'
+    'platform-3f980000.usb-usb-0:1.2:1.0' -> 'USB 1.2'
+    """
+    m = re.search(r'usb-0:([0-9.]+)', name)
+    if m:
+        tag = m.group(1).rstrip('.')
+        return f"USB {tag}"
+    return name
+
+
+def enumerate_serial_ports(configured_ports):
+    """Enumerate serial ports with stable /dev/serial/by-path paths preferred.
+
+    Returns a list of dicts: {'port', 'info', 'status'}. Each physical device
+    appears once: via its /dev/serial/by-path symlink when one exists, otherwise
+    via its raw /dev/tty* name. Kernel ttyS* ports are hidden when any USB
+    serial device is present.
+    """
+    configured = set(configured_ports or [])
+    ports = []
+
+    tty_paths = []
+    for pattern in ('/dev/ttyACM*', '/dev/ttyUSB*', '/dev/ttyAMA*', '/dev/ttyS*'):
+        tty_paths.extend(glob.glob(pattern))
+    tty_paths.sort()
+
+    has_usb_serial = any(p.startswith(('/dev/ttyACM', '/dev/ttyUSB')) for p in tty_paths)
+
+    # Map realpath -> tty device so by-path aliases can suppress raw names.
+    target_to_tty = {}
+    for p in tty_paths:
+        if has_usb_serial and p.startswith('/dev/ttyS'):
+            continue
+        target_to_tty[os.path.realpath(p)] = p
+
+    covered_targets = set()
+
+    by_path_dir = '/dev/serial/by-path'
+    if os.path.isdir(by_path_dir):
+        seen_targets = set()
+        for name in sorted(os.listdir(by_path_dir)):
+            symlink = os.path.join(by_path_dir, name)
+            if not os.path.islink(symlink):
+                continue
+            target = os.path.realpath(symlink)
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
+            covered_targets.add(target)
+
+            status = "CONFIGURED" if symlink in configured else "Available"
+            info = _get_port_info(symlink)
+            label = _compact_by_path_label(name)
+            tty_name = os.path.basename(target) if target in target_to_tty else '?'
+            ports.append({
+                'port': symlink,
+                'info': f"{label} -> {tty_name}  {info}",
+                'status': status,
+            })
+
+    # Raw tty entries only for devices that have no by-path alias.
+    for p, target in sorted(target_to_tty.items(), key=lambda kv: kv[0]):
+        if target in covered_targets:
+            continue
+        status = "CONFIGURED" if p in configured else "Available"
+        ports.append({
+            'port': p,
+            'info': f"{os.path.basename(p)}  {_get_port_info(p)}",
+            'status': status,
+        })
+
+    return ports
+
+
 # Determine config file location in user's home directory
 HOME_DIR = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(HOME_DIR, ".dcsbios")
@@ -1148,96 +1269,29 @@ class TUI:
             self.needs_redraw = True
     
     def detect_serial_ports(self):
-        """Detect available serial ports on the system"""
-        ports = []
-        
-        # Common serial port patterns on Linux
-        patterns = [
-            '/dev/ttyACM*',
-            '/dev/ttyUSB*',
-            '/dev/ttyAMA*',
-            '/dev/ttyS*',
-        ]
-        
-        # Get all matching ports
-        all_ports = []
-        for pattern in patterns:
-            all_ports.extend(glob.glob(pattern))
-        
-        # Sort ports naturally
-        all_ports.sort()
-        
-        # Get list of already configured ports
-        configured_ports = {device.port for device in self.manager.devices}
-        
-        # Check each port and get info
-        for port in all_ports:
-            try:
-                # Try to get device info from udev
-                info = self.get_port_info(port)
-                
-                # Mark if already configured
-                status = "CONFIGURED" if port in configured_ports else "Available"
-                
-                ports.append({
-                    'port': port,
-                    'info': info,
-                    'status': status
-                })
-            except Exception:
-                # If we can't get info, still add it
-                status = "CONFIGURED" if port in configured_ports else "Available"
-                ports.append({
-                    'port': port,
-                    'info': 'Unknown device',
-                    'status': status
-                })
-        
-        return ports
-    
-    def get_port_info(self, port):
-        """Get information about a serial port using udevadm"""
+        """Detect available serial ports on the system.
+
+        Delegates to the module-level enumerator, which prefers stable
+        /dev/serial/by-path paths so devices can be pinned to physical USB ports.
+        """
         try:
-            result = subprocess.run(
-                ['udevadm', 'info', '-q', 'property', '-n', port],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-            
-            if result.returncode == 0:
-                props = {}
-                for line in result.stdout.split('\n'):
-                    if '=' in line:
-                        key, value = line.split('=', 1)
-                        props[key] = value
-                
-                # Build a descriptive string
-                vendor = props.get('ID_VENDOR', '')
-                model = props.get('ID_MODEL', '')
-                serial = props.get('ID_SERIAL_SHORT', '')
-                
-                if vendor and model:
-                    info = f"{vendor} {model}"
-                    if serial:
-                        info += f" (S/N: {serial})"
-                    return info
-                elif 'ID_USB_INTERFACE_NUM' in props:
-                    return "USB Serial Device"
-                else:
-                    return "Serial Device"
+            return enumerate_serial_ports({device.port for device in self.manager.devices})
         except Exception:
-            pass
-        
-        # Fallback: try to identify by port name
-        if 'ACM' in port:
-            return "USB CDC ACM Device (Arduino compatible)"
-        elif 'USB' in port:
-            return "USB to Serial Adapter"
-        elif 'AMA' in port:
-            return "Hardware Serial Port"
-        else:
-            return "Serial Port"
+            # Enumeration should never break the dialog; degrade to raw tty names.
+            configured = {device.port for device in self.manager.devices}
+            ports = []
+            for pattern in ('/dev/ttyACM*', '/dev/ttyUSB*', '/dev/ttyAMA*'):
+                for port in sorted(glob.glob(pattern)):
+                    try:
+                        info = _get_port_info(port)
+                    except Exception:
+                        info = 'Unknown device'
+                    ports.append({
+                        'port': port,
+                        'info': info,
+                        'status': "CONFIGURED" if port in configured else "Available",
+                    })
+            return ports
     
     def port_selection_dialog(self, available_ports):
         """Show a dialog to select from available ports"""
@@ -1245,7 +1299,7 @@ class TUI:
         
         # Calculate dialog size based on number of ports
         dialog_height = min(len(available_ports) + 6, height - 4)
-        dialog_width = min(70, width - 4)
+        dialog_width = min(100, width - 4)
         dialog_y = max(0, (height - dialog_height) // 2)
         dialog_x = max(0, (width - dialog_width) // 2)
         
@@ -1298,7 +1352,7 @@ class TUI:
                         line = f" {info}"
                         dialog.addstr(row, 4, line[:dialog_width-6], color | curses.A_BOLD)
                     else:
-                        line = f" {port:<16} {info[:35]}"
+                        line = f" {info}"
                         if status == "CONFIGURED":
                             line += " [CONFIGURED]"
                         dialog.addstr(row, 4, line[:dialog_width-6], color)
