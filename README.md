@@ -18,30 +18,15 @@ A Terminal User Interface (TUI) application for managing DCS-BIOS serial devices
 ## Requirements
 
 - Python 3.9+
-- Debian-based Linux host (curses and udevadm are standard); Raspberry Pi only needed for the USB power control feature
+- Debian-based Linux host (curses and udevadm are standard)
 - Serial devices connected to the system (typically `/dev/serial/by-path/*` aliases of `/dev/ttyACM*` devices)
 - DCS installed on another machine with DCS-BIOS configured
 
 ## Installation
 
-The source repository is self-hosted Gitea and is private, so installs need a token exported as `GITEA_TOKEN`. One-line install:
-
-```bash
-GITEA_TOKEN=<your-token> bash -c 'curl -sSL -H "Authorization: token $GITEA_TOKEN" https://gitea.pitato.duckdns.org/pi/DCS-BIOS-TUI/raw/branch/main/install.sh | bash'
-```
-
-This downloads and runs the installation script directly without needing to clone the repository. The script will:
-- Install required Python dependencies
-- Set up the application as a systemd service
-- Add the user to the `dialout` group for serial port access
-- Start the service automatically
-- Configure the service to start on boot
-
-### Manual Installation
-
 1. Clone the repository:
    ```bash
-   git clone ssh://git@192.168.1.5:222/pi/DCS-BIOS-TUI.git
+   git clone https://github.com/Biggus22/DCS-BIOS-TUI.git
    cd DCS-BIOS-TUI
    ```
 
@@ -51,11 +36,26 @@ This downloads and runs the installation script directly without needing to clon
    venv/bin/pip install -r requirements.txt
    ```
 
+3. Add your user to the `dialout` group for serial port access (log out and back in afterwards):
+   ```bash
+   sudo usermod -a -G dialout $USER
+   ```
+
+### Optional: run headless as a systemd service
+
+The bundled `dcsbios-tui.service` runs `dcsbios_daemon.py` at boot so panels work without anyone logging in:
+
+```bash
+sudo cp dcsbios-tui.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now dcsbios-tui.service
+```
+
 ## Usage
 
 ### As a Service (After Installation)
 
-The application will run automatically in the background as a service, managing your DCS-BIOS serial connections.
+The service (`dcsbios_daemon.py`) runs in the background, managing your DCS-BIOS serial connections.
 The TUI interface is run interactively when you need to configure or monitor your devices.
 
 To interact with the TUI interface, SSH into your host and run:
@@ -67,12 +67,14 @@ The service (`dcsbios_daemon.py`) handles the actual data forwarding between DCS
 
 ### Service Management
 
-The installation script provides commands to manage the service:
+When installed as a systemd service:
 - Start service: `sudo systemctl start dcsbios-tui.service`
 - Stop service: `sudo systemctl stop dcsbios-tui.service`
 - Restart service: `sudo systemctl restart dcsbios-tui.service`
 - Check status: `sudo systemctl status dcsbios-tui.service`
 - View logs: `sudo journalctl -u dcsbios-tui.service -f`
+
+The daemon also serves live status at `http://<host>:8080/api/status` (configurable via `status_api_port` in the config, `0` disables it), so a headless host can be checked from any browser or with `curl`.
 
 ## Controls
 
@@ -96,14 +98,15 @@ Configuration is stored in `~/.dcsbios/config.json` and includes:
 
 ## Troubleshooting
 
-- If having serial port access issues, ensure you've run the installation script (which adds the user to the dialout group)
+- If having serial port access issues, ensure your user is in the `dialout` group
 - Verify DCS-PC IP address is correctly configured
 - Check that serial devices are properly connected and detected by the system
 - Check service status with `sudo systemctl status dcsbios-tui.service`
+- If the TUI reports another manager is already running, the systemd daemon owns the serial ports — stop it (`sudo systemctl stop dcsbios-tui.service`) before running an interactive manager, or use it headlessly
 
 ## Contributing
 
-Source lives on self-hosted Gitea (`gitea.pitato.duckdns.org/pi/DCS-BIOS-TUI`, private). Branch convention: `main` is the working branch; use feature branches and pull requests on Gitea.
+Pull requests and issues are welcome via GitHub.
 
 ## License
 
