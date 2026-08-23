@@ -1482,99 +1482,118 @@ class TUI:
         
         self.needs_redraw = True
     
+    # Canonical systemd unit for headless operation. The TUI once wrote a
+    # unit named dcsbios.service (clashing with the web app's unit name);
+    # deployments using that legacy name are migrated to this one.
+    CANON_UNIT = "dcsbios-tui.service"
+    LEGACY_UNIT = "dcsbios.service"
+
+    def _unit_state(self, unit):
+        """Return 'enabled', 'disabled' or None (not installed) for a unit."""
+        if not os.path.exists(f"/etc/systemd/system/{unit}"):
+            return None
+        try:
+            result = subprocess.run(
+                ["systemctl", "is-enabled", unit],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0 and "enabled" in result.stdout:
+                return "enabled"
+            return "disabled"
+        except Exception:
+            return "disabled"
+
     def check_boot_service(self):
-        """Check if boot service is installed"""
-        service_file = "/etc/systemd/system/dcsbios.service"
-        if os.path.exists(service_file):
-            try:
-                result = subprocess.run(
-                    ["systemctl", "is-enabled", "dcsbios.service"],
-                    capture_output=True, text=True
-                )
-                if result.returncode == 0 and "enabled" in result.stdout:
-                    return "Enabled"
-                else:
-                    return "Installed (disabled)"
-            except:
-                return "Installed"
+        """Check boot service state across canonical and legacy unit names."""
+        canon = self._unit_state(self.CANON_UNIT)
+        legacy = self._unit_state(self.LEGACY_UNIT)
+        if canon == "enabled":
+            return "Enabled"
+        if canon == "disabled":
+            return "Installed (disabled)"
+        if legacy:
+            return f"Legacy {self.LEGACY_UNIT} found - migration available"
         return "Not Installed"
-    
+
     def configure_boot_service(self):
         """Configure systemd service for boot"""
-        if not self.manager.auto_start:
-            self.manager.add_message("ERROR: Enable auto-start first!")
-            return
-        
-        # Ask what to do
         height, width = self.stdscr.getmaxyx()
-        dialog_height, dialog_width = 12, 55
+        dialog_height, dialog_width = 15, 62
         dialog_y = max(0, (height - dialog_height) // 2)
         dialog_x = max(0, (width - dialog_width) // 2)
-        
+
         dialog = curses.newwin(dialog_height, dialog_width, dialog_y, dialog_x)
         dialog.keypad(True)
         dialog.nodelay(0)
-        
+
+        canon = self._unit_state(self.CANON_UNIT)
+        legacy = self._unit_state(self.LEGACY_UNIT)
         current_status = self.check_boot_service()
-        
-        if current_status == "Not Installed":
-            options = ["Install Boot Service", "Cancel"]
-        else:
-            options = ["Enable Boot Service", "Disable Boot Service", "Uninstall Boot Service", "Cancel"]
-        
+
+        options = []
+        actions = {}
+        if canon is None or legacy:
+            options.append("Install Boot Service")
+            actions["Install Boot Service"] = self.install_boot_service
+        if legacy:
+            options.append(f"Migrate from {self.LEGACY_UNIT}")
+            actions[f"Migrate from {self.LEGACY_UNIT}"] = self.migrate_boot_service
+        if canon is not None:
+            if canon == "disabled":
+                options.append("Enable Boot Service")
+                actions["Enable Boot Service"] = self.enable_boot_service
+            else:
+                options.append("Disable Boot Service")
+                actions["Disable Boot Service"] = self.disable_boot_service
+            options.append("Uninstall Boot Service")
+            actions["Uninstall Boot Service"] = self.uninstall_boot_service
+        options.append("Cancel")
+
         selected = 0
-        
+
         while True:
             try:
                 dialog.clear()
                 dialog.box()
                 dialog.addstr(0, 2, " Boot Service ", curses.color_pair(4) | curses.A_BOLD)
-                
+
                 dialog.addstr(2, 2, f"Status: {current_status}", curses.color_pair(5))
-                dialog.addstr(3, 2, "Service will run headless on boot", curses.A_DIM)
-                
+                dialog.addstr(3, 2, f"Unit: {self.CANON_UNIT}", curses.A_DIM)
+                dialog.addstr(4, 2, "Service will run headless on boot", curses.A_DIM)
+
                 for i, option in enumerate(options):
-                    row = 5 + i
+                    row = 6 + i
                     if i == selected:
                         dialog.addstr(row, 2, f"► {option}", curses.color_pair(1))
                     else:
                         dialog.addstr(row, 2, f"  {option}")
-                
+
                 dialog.addstr(dialog_height - 2, 2, "↑/↓:Nav ENTER:Select ESC:Cancel")
                 dialog.refresh()
-                
+
                 key = dialog.getch()
-                
+
                 if key == curses.KEY_UP:
                     selected = (selected - 1) % len(options)
                 elif key == curses.KEY_DOWN:
                     selected = (selected + 1) % len(options)
                 elif key in [curses.KEY_ENTER, 10, 13]:
                     action = options[selected]
-                    
-                    if action == "Install Boot Service":
-                        self.install_boot_service()
+                    if action == "Cancel":
                         break
-                    elif action == "Enable Boot Service":
-                        self.enable_boot_service()
-                        break
-                    elif action == "Disable Boot Service":
-                        self.disable_boot_service()
-                        break
-                    elif action == "Uninstall Boot Service":
-                        self.uninstall_boot_service()
-                        break
-                    else:  # Cancel
-                        break
+                    handler = actions.get(action)
+                    if handler:
+                        handler()
+                    break
                 elif key == 27:  # ESC
                     break
             except curses.error:
                 pass
-        
+
         self.needs_redraw = True
-    
-    def install_boot_service(self):
-        """Install systemd service for boot"""
+
+    def _write_unit_file(self):
+        """Write the canonical unit definition to /tmp; returns tmp path."""
         script_dir = os.path.dirname(os.path.abspath(__file__))
         daemon_path = os.path.join(script_dir, "dcsbios_daemon.py")
         # Use the interpreter actually running this TUI so venv packages
@@ -1582,52 +1601,102 @@ class TUI:
         # crash with ModuleNotFoundError on venv-only installs.
         python_bin = sys.executable or "/usr/bin/python3"
         service_content = f"""[Unit]
-Description=DCS-BIOS Controller Manager
+Description=DCS-BIOS Controller Service (TUI daemon)
 After=network.target
+Wants=network.target
 
 [Service]
 Type=simple
 User={os.getenv('USER')}
+Group={os.getenv('USER')}
 WorkingDirectory={script_dir}
 ExecStart={python_bin} {daemon_path}
-Restart=on-failure
+Restart=always
 RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 """
-        
+        tmp_path = "/tmp/dcsbios-tui.service"
+        with open(tmp_path, 'w') as f:
+            f.write(service_content)
+        return tmp_path
+
+    def install_boot_service(self):
+        """Install and enable the canonical systemd unit; start it if free."""
         try:
-            # Write service file
-            service_file = "/tmp/dcsbios.service"
-            with open(service_file, 'w') as f:
-                f.write(service_content)
-            
-            # Install service
+            tmp_path = self._write_unit_file()
+
             result = subprocess.run(
-                ["sudo", "cp", service_file, "/etc/systemd/system/dcsbios.service"],
+                ["sudo", "cp", tmp_path, f"/etc/systemd/system/{self.CANON_UNIT}"],
                 capture_output=True, text=True
             )
-            
-            if result.returncode == 0:
-                # Reload systemd
-                subprocess.run(["sudo", "systemctl", "daemon-reload"])
-                # Enable service
-                subprocess.run(["sudo", "systemctl", "enable", "dcsbios.service"])
-                
-                self.manager.add_message("Boot service installed and enabled")
-                self.manager.add_message("Manager will start on next boot")
-            else:
+
+            if result.returncode != 0:
                 self.manager.add_message(f"Error: {result.stderr}")
-                
+                return
+
+            subprocess.run(["sudo", "systemctl", "daemon-reload"])
+            subprocess.run(["sudo", "systemctl", "enable", self.CANON_UNIT])
+
+            self.manager.add_message("Boot service installed and enabled")
+            if not udp_port_in_use(self.manager.udp_port):
+                subprocess.run(["sudo", "systemctl", "start", self.CANON_UNIT])
+                self.manager.add_message("Manager started")
+            else:
+                self.manager.add_message(
+                    "UDP port busy - manager already running elsewhere; "
+                    "unit will take over on next boot"
+                )
         except Exception as e:
             self.manager.add_message(f"Install error: {e}")
-    
+
+    def migrate_boot_service(self):
+        """Replace a legacy-named unit with the canonical one."""
+        try:
+            was_active = False
+            try:
+                result = subprocess.run(
+                    ["systemctl", "is-active", self.LEGACY_UNIT],
+                    capture_output=True, text=True
+                )
+                was_active = result.returncode == 0 and "active" in result.stdout
+            except Exception:
+                pass
+
+            # Install canonical first so there is no window without a unit
+            self.install_boot_service()
+            if self._unit_state(self.CANON_UNIT) is None:
+                self.manager.add_message("Migration aborted - canonical unit failed to install")
+                return
+
+            subprocess.run(["sudo", "systemctl", "stop", self.LEGACY_UNIT], capture_output=True)
+            subprocess.run(["sudo", "systemctl", "disable", self.LEGACY_UNIT], capture_output=True)
+            result = subprocess.run(
+                ["sudo", "rm", f"/etc/systemd/system/{self.LEGACY_UNIT}"],
+                capture_output=True, text=True
+            )
+            subprocess.run(["sudo", "systemctl", "daemon-reload"])
+            subprocess.run(["sudo", "systemctl", "reset-failed", self.LEGACY_UNIT],
+                           capture_output=True)
+
+            if result.returncode == 0:
+                self.manager.add_message(
+                    f"Migration complete: {self.LEGACY_UNIT} removed, "
+                    f"{self.CANON_UNIT} active"
+                )
+            else:
+                self.manager.add_message(f"Legacy removal error: {result.stderr}")
+        except Exception as e:
+            self.manager.add_message(f"Migration error: {e}")
+
     def enable_boot_service(self):
         """Enable boot service"""
         try:
             result = subprocess.run(
-                ["sudo", "systemctl", "enable", "dcsbios.service"],
+                ["sudo", "systemctl", "enable", self.CANON_UNIT],
                 capture_output=True, text=True
             )
             if result.returncode == 0:
@@ -1636,12 +1705,12 @@ WantedBy=multi-user.target
                 self.manager.add_message(f"Error: {result.stderr}")
         except Exception as e:
             self.manager.add_message(f"Enable error: {e}")
-    
+
     def disable_boot_service(self):
         """Disable boot service"""
         try:
             result = subprocess.run(
-                ["sudo", "systemctl", "disable", "dcsbios.service"],
+                ["sudo", "systemctl", "disable", self.CANON_UNIT],
                 capture_output=True, text=True
             )
             if result.returncode == 0:
@@ -1650,24 +1719,20 @@ WantedBy=multi-user.target
                 self.manager.add_message(f"Error: {result.stderr}")
         except Exception as e:
             self.manager.add_message(f"Disable error: {e}")
-    
+
     def uninstall_boot_service(self):
         """Uninstall boot service"""
         try:
-            # Disable first
-            subprocess.run(["sudo", "systemctl", "disable", "dcsbios.service"],
-                         capture_output=True)
-            # Stop if running
-            subprocess.run(["sudo", "systemctl", "stop", "dcsbios.service"],
-                         capture_output=True)
-            # Remove file
+            subprocess.run(["sudo", "systemctl", "disable", self.CANON_UNIT],
+                           capture_output=True)
+            subprocess.run(["sudo", "systemctl", "stop", self.CANON_UNIT],
+                           capture_output=True)
             result = subprocess.run(
-                ["sudo", "rm", "/etc/systemd/system/dcsbios.service"],
+                ["sudo", "rm", f"/etc/systemd/system/{self.CANON_UNIT}"],
                 capture_output=True, text=True
             )
-            # Reload systemd
             subprocess.run(["sudo", "systemctl", "daemon-reload"])
-            
+
             if result.returncode == 0:
                 self.manager.add_message("Boot service uninstalled")
             else:
