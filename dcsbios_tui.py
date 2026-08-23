@@ -194,6 +194,18 @@ def enumerate_serial_ports(configured_ports):
     return ports
 
 
+def udp_port_in_use(port):
+    """Return True if another process already holds the manager's UDP port."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.bind(("0.0.0.0", port))
+        return False
+    except OSError:
+        return True
+    finally:
+        probe.close()
+
+
 # Determine config file location in user's home directory
 HOME_DIR = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(HOME_DIR, ".dcsbios")
@@ -396,8 +408,11 @@ class DCSBIOSManager:
             mreq = struct.pack("=4sl", socket.inet_aton(self.multicast_group), socket.INADDR_ANY)
             self.udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
             self.add_message(f"UDP socket listening on port {self.udp_port}")
+            return True
         except Exception as e:
+            self.udp_sock = None
             self.add_message(f"UDP setup error: {e}")
+            return False
     
     def is_dcsbios_export_packet(self, data):
         return len(data) >= 4 and data[0] == 0x55 and data[1] == 0x55 and data[2] == 0x55 and data[3] == 0x55
@@ -572,12 +587,20 @@ class DCSBIOSManager:
     def start(self):
         if self.running:
             self.add_message("Already running!")
-            return
-        
+            return True
+
         self.running = True
         with self.serial_open_lock:
             self.next_serial_open_time = time.time()
-        self.setup_udp()
+
+        if not self.setup_udp():
+            # Refuse to run half-alive: without the UDP socket nothing works.
+            self.add_message(
+                f"UDP port {self.udp_port} unavailable - another DCS-BIOS "
+                "manager instance is probably already running."
+            )
+            self.running = False
+            return False
 
         if self.serial_open_spacing_seconds > 0:
             self.add_message(
@@ -601,6 +624,7 @@ class DCSBIOSManager:
                 self.threads.append(thread)
         
         self.add_message("DCS-BIOS manager started")
+        return True
     
     def stop(self):
         if not self.running:
@@ -692,12 +716,16 @@ class TUI:
             self.stdscr.addstr(0, max(0, (width - len(header)) // 2), header, curses.color_pair(4) | curses.A_BOLD)
             
             # Status line
-            status = "RUNNING" if self.manager.running else "STOPPED"
-            status_color = curses.color_pair(2) if self.manager.running else curses.color_pair(3)
-            status_line = f"Status: {status}"
-            if self.manager.auto_start:
-                status_line += " [AUTO]"
-            self.stdscr.addstr(1, 2, status_line, status_color | curses.A_BOLD)
+            if getattr(self, 'external_manager_running', False):
+                status_line = "Status: SERVICE RUNNING (system service handles forwarding)"
+                self.stdscr.addstr(1, 2, status_line[:width-4], curses.color_pair(2) | curses.A_BOLD)
+            else:
+                status = "RUNNING" if self.manager.running else "STOPPED"
+                status_color = curses.color_pair(2) if self.manager.running else curses.color_pair(3)
+                status_line = f"Status: {status}"
+                if self.manager.auto_start:
+                    status_line += " [AUTO]"
+                self.stdscr.addstr(1, 2, status_line, status_color | curses.A_BOLD)
             
             dcs_str = f"DCS: {self.manager.dcs_pc_ip}"
             if width > 30:
@@ -1856,12 +1884,19 @@ WantedBy=multi-user.target
 
 def main(stdscr):
     tui = TUI(stdscr)
-    
-    # Auto-start if enabled
-    if tui.manager.auto_start and not tui.manager.running:
-        tui.manager.start()
-        tui.manager.add_message("Auto-started DCS-BIOS manager")
-    
+
+    # If another manager (e.g. the dcsbios.service daemon) already owns the
+    # UDP port, do NOT spawn a competing instance - just tell the user.
+    if udp_port_in_use(tui.manager.udp_port):
+        tui.external_manager_running = True
+        tui.manager.add_message(
+            "Another DCS-BIOS manager is already running "
+            "(system service). This screen shows configuration only."
+        )
+    elif tui.manager.auto_start and not tui.manager.running:
+        if tui.manager.start():
+            tui.manager.add_message("Auto-started DCS-BIOS manager")
+
     tui.run()
 
 def check_permissions():

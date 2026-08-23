@@ -7,6 +7,7 @@ Background service for managing DCS-BIOS serial devices on Raspberry Pi
 import datetime
 import json
 import os
+import sys
 import threading
 import time
 import socket
@@ -251,8 +252,11 @@ class DCSBIOSManager:
             mreq = struct.pack("=4sl", socket.inet_aton(self.multicast_group), socket.INADDR_ANY)
             self.udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
             self.add_message(f"UDP socket listening on port {self.udp_port}")
+            return True
         except Exception as e:
+            self.udp_sock = None
             self.add_message(f"UDP setup error: {e}")
+            return False
 
     def is_dcsbios_export_packet(self, data):
         return len(data) >= 4 and data[0] == 0x55 and data[1] == 0x55 and data[2] == 0x55 and data[3] == 0x55
@@ -427,12 +431,20 @@ class DCSBIOSManager:
     def start(self):
         if self.running:
             self.add_message("Already running!")
-            return
+            return True
 
         self.running = True
         with self.serial_open_lock:
             self.next_serial_open_time = time.time()
-        self.setup_udp()
+
+        if not self.setup_udp():
+            # Refuse to run half-alive: without the UDP socket nothing works.
+            self.add_message(
+                f"UDP port {self.udp_port} unavailable - another DCS-BIOS "
+                "manager instance is probably already running. Stopping."
+            )
+            self.running = False
+            return False
 
         if self.serial_open_spacing_seconds > 0:
             self.add_message(
@@ -456,6 +468,7 @@ class DCSBIOSManager:
                 self.threads.append(thread)
 
         self.add_message("DCS-BIOS manager daemon started")
+        return True
 
     def stop(self):
         if not self.running:
@@ -477,8 +490,13 @@ class DCSBIOSManager:
 # Main execution
 if __name__ == '__main__':
     manager = DCSBIOSManager()
-    manager.start()
-    
+    if not manager.start():
+        # start() only fails when the UDP port is already owned; exit loudly
+        # so systemd logs the reason instead of running a useless shell.
+        print("ERROR: another DCS-BIOS manager appears to be holding UDP "
+              f"port {manager.udp_port}. Not starting.", file=sys.stderr)
+        sys.exit(1)
+
     try:
         while manager.running:
             time.sleep(1)
